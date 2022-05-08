@@ -1,10 +1,10 @@
+from http import HTTPStatus
 import logging
 import os
 import sys
 import time
 
 from dotenv import load_dotenv
-from http import HTTPStatus
 import requests
 from telegram import Bot
 
@@ -23,33 +23,41 @@ PRACTICUM_TOKEN = os.getenv('PRACTICUM_TOKEN')
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
 TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
 
-RETRY_TIME = 5
+RETRY_TIME = 10
 ENDPOINT = 'https://practicum.yandex.ru/api/user_api/homework_statuses/'
 HEADERS = {'Authorization': f'OAuth {PRACTICUM_TOKEN}'}
+VERIABLE_ENV = ['PRACTICUM_TOKEN', 'TELEGRAM_CHAT_ID', 'TELEGRAM_TOKEN']
 
-messages = {
-    'SUCCESS_SEND_MESSAGE': 'Сообщение "{message}" успешно отправлено.',
-    'ERROR_SEND_MESSAGE': 'Не удалось отправить сообщение: {error}.',
-    'NO_ANSWER': (
-        'Сервер не отвечает: {error}\n'
-        '{endpoint}, {headers}, {params}.'
-    ),
-    'REQUEST_FAILD': (
-        'Ошибка запроса: {status_code}\n'
-        '{endpoint}, {headers}, {params}.'
-    ),
-    'NO_KEY_ERROR': '"homeworks" отсутствует в списке',
-    'VALLUE_TYPE_ERROR': (
-        'Ожидаемый тип ключа "homework" - list. '
-        'Получен {resp_type}.'
-    ),
-    'UNKNOWN_HW_STATUS': 'Неожиданный статус проверки {status}. {error}.',
-    'HW_STATUS': (
-        'Изменился статус проверки работы "{name}". {verdict}'
-    ),
-    'NO_TOKEN': 'Для переменной окружения {name} значение не задано.',
-    'PROGRAMM_ERROR': 'Сбой в работе программы: {error}.',
-}
+SUCCESS_SEND_MESSAGE = 'Сообщение "{message}" успешно отправлено.'
+ERROR_SEND_MESSAGE = 'Не удалось отправить сообщение "{message}": {error}.'
+NO_ANSWER = (
+    'Сервер не отвечает: {error}\n'
+    '{url}, {headers}, {params}.'
+)
+REQUEST_FAILD = (
+    'Ошибка запроса: {status_code}\n'
+    '{url}, {headers}, {params}.'
+)
+SERVICE_ERROR = (
+    'Ошибка обслуживания: {error}\n'
+    '{url}, {headers}, {params}.'
+)
+NO_KEY_ERROR = '"homeworks" отсутствует в списке'
+VALLUE_TYPE_RESP_ERROR = (
+    'Ожидаемый тип ключа запроса - dict. '
+    'Получен {resp_type}.'
+)
+VALLUE_TYPE_HW_ERROR = (
+    'Ожидаемый тип ключа "homework" - list. '
+    'Получен {resp_type}.'
+)
+UNKNOWN_HW_STATUS = 'Неожиданный статус проверки {status}.'
+HW_STATUS = (
+    'Изменился статус проверки работы "{name}". {verdict}'
+)
+NO_TOKEN = 'Для переменных окружения {name} значение не задано.'
+PROGRAMM_ERROR = 'Сбой в работе программы: {error}.'
+
 
 HOMEWORK_VERDICTS = {
     'approved': 'Работа проверена: ревьюеру всё понравилось. Ура!',
@@ -63,84 +71,82 @@ def send_message(bot, message):
     try:
         bot.send_message(TELEGRAM_CHAT_ID, message)
         logger.info(
-            messages['SUCCESS_SEND_MESSAGE'].format(message=message)
+            SUCCESS_SEND_MESSAGE.format(message=message)
         )
     except Exception as error:
         logger.error(
-            messages['ERROR_SEND_MESSAGE'].format(error=error),
+            ERROR_SEND_MESSAGE.format(error=error, message=message),
             exc_info=True
         )
-        return error
 
 
 def get_api_answer(current_timestamp):
     """API запрос к сервису Yandex.Practicum."""
     params = {'from_date': current_timestamp}
+    request_params = dict(
+        url=ENDPOINT, headers=HEADERS, params=params
+    )
     try:
-        response = requests.get(
-            ENDPOINT,
-            headers=HEADERS,
-            params=params
-        )
+        response = requests.get(**request_params)
     except requests.exceptions.RequestException as error:
-        logger.error(error)
-        raise ConnectionError(messages['NO_ANSWER'].format(
+        raise ConnectionError(NO_ANSWER.format(
             error=error,
-            endpoint=ENDPOINT,
-            headers=HEADERS,
-            params=params
+            **request_params
         ))
+    for error in ('code', 'error'):
+        if error in response.json():
+            raise RuntimeError(SERVICE_ERROR.format(
+                error=error,
+                **request_params
+            ))
     if response.status_code != HTTPStatus.OK:
-        raise RuntimeError(messages['REQUEST_FAILD'].format(
+        raise RuntimeError(REQUEST_FAILD.format(
             status_code=response.status_code,
-            endpoint=ENDPOINT,
-            headers=HEADERS,
-            params=params
+            **request_params
         ))
     return response.json()
 
 
 def check_response(response):
     """Проверка ответа API Yandex.Practicum на корректность."""
-    homework = response['homeworks']
+    if not isinstance(response, dict):
+        raise TypeError(
+            VALLUE_TYPE_RESP_ERROR.format(resp_type=type(response))
+        )
     if 'homeworks' not in response:
-        raise ValueError(messages['NO_KEY_ERROR'])
+        raise ValueError(NO_KEY_ERROR)
+    homework = response['homeworks']
     if not isinstance(homework, list):
         raise TypeError(
-            messages['VALLUE_TYPE_ERROR'].format(resp_type=type(homework))
+            VALLUE_TYPE_HW_ERROR.format(resp_type=type(homework))
         )
     return homework
 
 
 def parse_status(homework):
     """Получение статуса от Yandex.Practicum."""
-    name = homework.get('homework_name')
-    status = homework.get('status')
-    try:
-        HOMEWORK_VERDICTS[status]
-    except ValueError as error:
-        logger.error(
-            messages['UNKNOWN_HW_STATUS'].format(
-                status=homework['status'], error=error
+    name = homework['homework_name']
+    status = homework['status']
+    if status not in HOMEWORK_VERDICTS:
+        raise ValueError(
+            UNKNOWN_HW_STATUS.format(
+                status=homework['status']
             )
         )
-    verdict = HOMEWORK_VERDICTS[status]
-    return messages['HW_STATUS'].format(
-        name=name, verdict=verdict
+    return HW_STATUS.format(
+        name=name, verdict=HOMEWORK_VERDICTS[status]
     )
 
 
 def check_tokens():
     """Проверка наличия всех параметров в окружении."""
-    veriable_env = ['PRACTICUM_TOKEN', 'TELEGRAM_CHAT_ID', 'TELEGRAM_TOKEN']
-    NOT_EXIST_TOKEN_LIST = []
-    for name in veriable_env:
-        if globals()[name] is None:
-            NOT_EXIST_TOKEN_LIST.append(name)
-            logger.critical(
-                messages['NO_TOKEN'].format(name=name)
-            )
-    if len(NOT_EXIST_TOKEN_LIST) != 0:
+    not_exist_token_list = [
+        name for name in VERIABLE_ENV if globals()[name] is None
+    ]
+    if not_exist_token_list:
+        logger.critical(
+            NO_TOKEN.format(name=not_exist_token_list)
+        )
         return False
     return True
 
@@ -154,13 +160,15 @@ def main():
     while True:
         try:
             response = get_api_answer(current_timestamp)
-            print(response['current_date'])
-            message = parse_status(check_response(response)[0])
+            if check_response(response):
+                message = parse_status(check_response(response)[0])
+                send_message(bot, message)
+            print(response)
             current_timestamp = response.get('current_date', current_timestamp)
         except Exception as error:
-            message = messages['PROGRAMM_ERROR'].format(error=error)
+            message = PROGRAMM_ERROR.format(error=error)
             logger.error(message, exc_info=True)
-        send_message(bot, message)
+            send_message(bot, message)
 
         time.sleep(RETRY_TIME)
 
