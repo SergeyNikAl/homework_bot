@@ -26,7 +26,7 @@ TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
 RETRY_TIME = 600
 ENDPOINT = 'https://practicum.yandex.ru/api/user_api/homework_statuses/'
 HEADERS = {'Authorization': f'OAuth {PRACTICUM_TOKEN}'}
-VERIABLE_ENV = ['PRACTICUM_TOKEN', 'TELEGRAM_CHAT_ID', 'TELEGRAM_TOKEN']
+VERIABLES_ENV = ('PRACTICUM_TOKEN', 'TELEGRAM_CHAT_ID', 'TELEGRAM_TOKEN')
 
 SUCCESS_SEND_MESSAGE = 'Сообщение "{message}" успешно отправлено.'
 ERROR_SEND_MESSAGE = 'Не удалось отправить сообщение "{message}": {error}.'
@@ -39,7 +39,7 @@ REQUEST_FAILD = (
     '{url}, {headers}, {params}.'
 )
 SERVICE_ERROR = (
-    'Ошибка обслуживания: {error}\n'
+    'Ошибка обслуживания: {error} - {meaning}\n'
     '{url}, {headers}, {params}.'
 )
 NO_KEY_ERROR = '"homeworks" отсутствует в списке'
@@ -82,9 +82,10 @@ def send_message(bot, message):
 
 def get_api_answer(current_timestamp):
     """API запрос к сервису Yandex.Practicum."""
-    params = {'from_date': current_timestamp}
     request_params = dict(
-        url=ENDPOINT, headers=HEADERS, params=params
+        url=ENDPOINT,
+        headers=HEADERS,
+        params={'from_date': current_timestamp}
     )
     try:
         response = requests.get(**request_params)
@@ -93,10 +94,12 @@ def get_api_answer(current_timestamp):
             error=error,
             **request_params
         ))
+    response_js = response.json()
     for error in ('code', 'error'):
-        if error in response.json():
+        if error in response_js:
             raise RuntimeError(SERVICE_ERROR.format(
                 error=error,
+                meaning=response_js[error],
                 **request_params
             ))
     if response.status_code != HTTPStatus.OK:
@@ -104,7 +107,7 @@ def get_api_answer(current_timestamp):
             status_code=response.status_code,
             **request_params
         ))
-    return response.json()
+    return response_js
 
 
 def check_response(response):
@@ -115,12 +118,12 @@ def check_response(response):
         )
     if 'homeworks' not in response:
         raise ValueError(NO_KEY_ERROR)
-    homework = response['homeworks']
-    if not isinstance(homework, list):
+    homeworks = response['homeworks']
+    if not isinstance(homeworks, list):
         raise TypeError(
-            VALLUE_TYPE_HW_ERROR.format(resp_type=type(homework))
+            VALLUE_TYPE_HW_ERROR.format(resp_type=type(homeworks))
         )
-    return homework
+    return homeworks
 
 
 def parse_status(homework):
@@ -130,7 +133,7 @@ def parse_status(homework):
     if status not in HOMEWORK_VERDICTS:
         raise ValueError(
             UNKNOWN_HW_STATUS.format(
-                status=homework['status']
+                status=status
             )
         )
     return HW_STATUS.format(
@@ -140,12 +143,12 @@ def parse_status(homework):
 
 def check_tokens():
     """Проверка наличия всех параметров в окружении."""
-    not_exist_token_list = [
-        name for name in VERIABLE_ENV if globals()[name] is None
+    not_exist_token = [
+        name for name in VERIABLES_ENV if globals()[name] is None
     ]
-    if not_exist_token_list:
+    if not_exist_token:
         logger.critical(
-            NO_TOKEN.format(name=not_exist_token_list)
+            NO_TOKEN.format(name=not_exist_token)
         )
         return False
     return True
