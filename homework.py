@@ -163,7 +163,7 @@ def main():
     if not check_tokens():
         return
     bot = telegram.Bot(token=TELEGRAM_TOKEN)
-    current_timestamp = 0
+    current_timestamp = int(time.time())
     while True:
         try:
             response = get_api_answer(current_timestamp)
