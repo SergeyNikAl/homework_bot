@@ -1,18 +1,22 @@
 from http import HTTPStatus
 import logging
+from logging.handlers import RotatingFileHandler
 import os
-import sys
 import time
 
+import telegram
 from dotenv import load_dotenv
 import requests
-from telegram import Bot
 
 load_dotenv()
 
+LOG_FILENAME = __file__ + '.log'
 logger = logging.getLogger(__name__)
+handler = RotatingFileHandler(
+    LOG_FILENAME,
+    maxBytes=50000000,
+    backupCount=5)
 logger.setLevel(logging.DEBUG)
-handler = logging.StreamHandler(sys.stdout)
 logger.addHandler(handler)
 formatter = logging.Formatter(
     '%(asctime)s, [%(levelname)s], %(message)s'
@@ -57,6 +61,7 @@ HW_STATUS = (
 )
 NO_TOKEN = 'Для переменных окружения {name} значение не задано.'
 PROGRAMM_ERROR = 'Сбой в работе программы: {error}.'
+NETWORK_CONNECTION_ERROR = 'Ошибка {error}. Нет соединения с интеренетом'
 
 
 HOMEWORK_VERDICTS = {
@@ -67,17 +72,16 @@ HOMEWORK_VERDICTS = {
 
 
 def send_message(bot, message):
-    """Отправление в чат новых сообщений."""
+    """Отправляет сообщение в Telegramm."""
     try:
         bot.send_message(TELEGRAM_CHAT_ID, message)
-        logger.info(
-            SUCCESS_SEND_MESSAGE.format(message=message)
-        )
-    except Exception as error:
-        logger.error(
-            ERROR_SEND_MESSAGE.format(error=error, message=message),
-            exc_info=True
-        )
+        logger.info(SUCCESS_SEND_MESSAGE.format(message=message))
+        return True
+    except telegram.error.TelegramError as error:
+        logger.exception(ERROR_SEND_MESSAGE.format(
+            error=error, message=message
+        ))
+        return False
 
 
 def get_api_answer(current_timestamp):
@@ -94,6 +98,11 @@ def get_api_answer(current_timestamp):
             error=error,
             **request_params
         ))
+    if response.status_code != HTTPStatus.OK:
+        raise RuntimeError(REQUEST_FAILD.format(
+            status_code=response.status_code,
+            **request_params
+        ))
     response_js = response.json()
     for error in ('code', 'error'):
         if error in response_js:
@@ -102,11 +111,6 @@ def get_api_answer(current_timestamp):
                 meaning=response_js[error],
                 **request_params
             ))
-    if response.status_code != HTTPStatus.OK:
-        raise RuntimeError(REQUEST_FAILD.format(
-            status_code=response.status_code,
-            **request_params
-        ))
     return response_js
 
 
@@ -158,15 +162,16 @@ def main():
     """Основная логика работы бота."""
     if not check_tokens():
         return
-    bot = Bot(token=TELEGRAM_TOKEN)
-    current_timestamp = int(time.time())
+    bot = telegram.Bot(token=TELEGRAM_TOKEN)
+    current_timestamp = 0
     while True:
         try:
             response = get_api_answer(current_timestamp)
-            if check_response(response):
-                message = parse_status(check_response(response)[0])
-                send_message(bot, message)
-            current_timestamp = response.get('current_date', current_timestamp)
+            homeworks = check_response(response)
+            if homeworks and send_message(bot, parse_status(homeworks[0])):
+                current_timestamp = response.get(
+                    'current_date', current_timestamp
+                )
         except Exception as error:
             message = PROGRAMM_ERROR.format(error=error)
             logger.error(message, exc_info=True)
